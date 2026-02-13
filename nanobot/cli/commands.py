@@ -1,4 +1,24 @@
-"""CLI commands for nanobot."""
+"""
+CLI 命令模块 - nanobot 的所有命令行命令定义。
+
+本模块使用 Typer 框架定义 nanobot 的完整 CLI 命令体系：
+- onboard：初始化配置和工作空间
+- gateway：启动网关服务（消息渠道 + Agent + 定时任务 + 心跳）
+- agent：直接与 Agent 交互（单条消息或交互式对话）
+- channels：渠道管理（状态查看、设备登录）
+- cron：定时任务管理（增删改查、手动触发）
+- status：查看系统状态
+
+技术栈：
+- Typer：CLI 框架（基于 Click，支持类型注解自动生成帮助文档）
+- Rich：终端美化输出（Markdown 渲染、表格、进度条等）
+- prompt_toolkit：交互式输入（历史记录、多行粘贴、编辑器支持）
+
+二开提示：
+- 如需添加语音交互命令，可在此文件中添加新的 @app.command()
+- gateway 命令是最完整的启动入口，包含了所有服务的编排逻辑
+- 交互模式的实现（_read_interactive_input_async）可作为语音输入的参考
+"""
 
 import asyncio
 import os
@@ -20,25 +40,32 @@ from prompt_toolkit.patch_stdout import patch_stdout
 
 from nanobot import __version__, __logo__
 
+# 创建 Typer 应用实例（CLI 根命令）
 app = typer.Typer(
     name="nanobot",
     help=f"{__logo__} nanobot - Personal AI Assistant",
-    no_args_is_help=True,
+    no_args_is_help=True,  # 无参数时显示帮助信息
 )
 
-console = Console()
-EXIT_COMMANDS = {"exit", "quit", "/exit", "/quit", ":q"}
+console = Console()  # Rich 控制台实例，用于美化输出
+EXIT_COMMANDS = {"exit", "quit", "/exit", "/quit", ":q"}  # 退出交互模式的命令集合
 
 # ---------------------------------------------------------------------------
-# CLI input: prompt_toolkit for editing, paste, history, and display
+# CLI 输入：使用 prompt_toolkit 实现编辑、粘贴、历史记录和显示
 # ---------------------------------------------------------------------------
 
-_PROMPT_SESSION: PromptSession | None = None
-_SAVED_TERM_ATTRS = None  # original termios settings, restored on exit
+_PROMPT_SESSION: PromptSession | None = None  # prompt_toolkit 会话实例
+_SAVED_TERM_ATTRS = None  # 保存的终端原始属性（用于退出时恢复）
 
 
 def _flush_pending_tty_input() -> None:
-    """Drop unread keypresses typed while the model was generating output."""
+    """
+    清除终端中未读的按键输入。
+
+    在 Agent 处理消息期间，用户可能按了额外的键，
+    这些残留输入会干扰下次 prompt_toolkit 读取，因此需要提前清除。
+    优先使用 termios.tcflush（POSIX），回退到 select+read 轮询。
+    """
     try:
         fd = sys.stdin.fileno()
         if not os.isatty(fd):
@@ -65,7 +92,12 @@ def _flush_pending_tty_input() -> None:
 
 
 def _restore_terminal() -> None:
-    """Restore terminal to its original state (echo, line buffering, etc.)."""
+    """
+    恢复终端到原始状态（回显、行缓冲等）。
+
+    prompt_toolkit 会修改终端属性（如关闭回显、启用 raw mode），
+    退出交互模式时必须恢复，否则终端会变得不可用。
+    """
     if _SAVED_TERM_ATTRS is None:
         return
     try:
@@ -76,10 +108,15 @@ def _restore_terminal() -> None:
 
 
 def _init_prompt_session() -> None:
-    """Create the prompt_toolkit session with persistent file history."""
+    """
+    创建 prompt_toolkit 会话，启用持久化文件历史记录。
+
+    历史文件保存在 ~/.nanobot/history/cli_history，
+    用户可以通过上/下方向键浏览之前输入过的命令。
+    """
     global _PROMPT_SESSION, _SAVED_TERM_ATTRS
 
-    # Save terminal state so we can restore it on exit
+    # 保存终端状态，以便退出时恢复
     try:
         import termios
         _SAVED_TERM_ATTRS = termios.tcgetattr(sys.stdin.fileno())
@@ -97,7 +134,7 @@ def _init_prompt_session() -> None:
 
 
 def _print_agent_response(response: str, render_markdown: bool) -> None:
-    """Render assistant response with consistent terminal styling."""
+    """以一致的终端样式渲染 Agent 回复。支持 Markdown 或纯文本两种模式。"""
     content = response or ""
     body = Markdown(content) if render_markdown else Text(content)
     console.print()
@@ -107,17 +144,18 @@ def _print_agent_response(response: str, render_markdown: bool) -> None:
 
 
 def _is_exit_command(command: str) -> bool:
-    """Return True when input should end interactive chat."""
+    """判断用户输入是否为退出命令。"""
     return command.lower() in EXIT_COMMANDS
 
 
 async def _read_interactive_input_async() -> str:
-    """Read user input using prompt_toolkit (handles paste, history, display).
+    """
+    使用 prompt_toolkit 异步读取用户输入。
 
-    prompt_toolkit natively handles:
-    - Multiline paste (bracketed paste mode)
-    - History navigation (up/down arrows)
-    - Clean display (no ghost characters or artifacts)
+    prompt_toolkit 原生支持：
+    - 多行粘贴（bracketed paste mode）
+    - 历史记录导航（上/下方向键）
+    - 干净的显示（无残影或伪影）
     """
     if _PROMPT_SESSION is None:
         raise RuntimeError("Call _init_prompt_session() first")
@@ -132,6 +170,7 @@ async def _read_interactive_input_async() -> str:
 
 
 def version_callback(value: bool):
+    """版本号回调：当用户传入 --version/-v 参数时，打印版本号并退出。"""
     if value:
         console.print(f"{__logo__} nanobot v{__version__}")
         raise typer.Exit()
@@ -143,7 +182,7 @@ def main(
         None, "--version", "-v", callback=version_callback, is_eager=True
     ),
 ):
-    """nanobot - Personal AI Assistant."""
+    """nanobot CLI 根命令回调。处理全局选项（如 --version）。"""
     pass
 
 
@@ -154,7 +193,15 @@ def main(
 
 @app.command()
 def onboard():
-    """Initialize nanobot configuration and workspace."""
+    """
+    初始化 nanobot 配置和工作空间。
+
+    执行流程：
+    1. 在 ~/.nanobot/ 下创建默认配置文件 config.json
+    2. 创建工作空间目录及模板文件（AGENTS.md、SOUL.md、USER.md 等）
+    3. 创建 memory/ 和 skills/ 子目录
+    4. 打印后续操作指引（配置 API Key、启动聊天等）
+    """
     from nanobot.config.loader import get_config_path, save_config
     from nanobot.config.schema import Config
     from nanobot.utils.helpers import get_workspace_path
@@ -189,7 +236,20 @@ def onboard():
 
 
 def _create_workspace_templates(workspace: Path):
-    """Create default workspace template files."""
+    """
+    创建工作空间默认模板文件。
+
+    包含以下文件：
+    - AGENTS.md：Agent 指令/人设定义
+    - SOUL.md：Agent 灵魂/性格描述
+    - USER.md：用户信息和偏好
+    - memory/MEMORY.md：长期记忆存储
+    - memory/HISTORY.md：历史事件日志
+    - skills/：自定义技能脚本目录
+
+    参数:
+        workspace: 工作空间根目录路径
+    """
     templates = {
         "AGENTS.md": """# Agent Instructions
 
@@ -270,7 +330,19 @@ This file stores important information that should persist across sessions.
 
 
 def _make_provider(config):
-    """Create LiteLLMProvider from config. Exits if no API key found."""
+    """
+    根据配置创建 LiteLLM 提供者实例。
+
+    从配置中读取 API Key、API Base、模型名等信息，
+    创建统一的 LLM 提供者。如果未配置 API Key 且不是
+    本地模型（bedrock），则打印错误并退出。
+
+    参数:
+        config: 全局配置对象
+
+    返回:
+        LiteLLMProvider 实例
+    """
     from nanobot.providers.litellm_provider import LiteLLMProvider
     p = config.get_provider()
     model = config.agents.defaults.model
@@ -297,7 +369,23 @@ def gateway(
     port: int = typer.Option(18790, "--port", "-p", help="Gateway port"),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose output"),
 ):
-    """Start the nanobot gateway."""
+    """
+    启动 nanobot 网关服务（核心启动命令）。
+
+    这是最完整的运行模式，编排所有子服务：
+    1. 加载配置并初始化消息总线
+    2. 创建 LLM 提供者和会话管理器
+    3. 创建定时任务服务（CronService）
+    4. 创建 Agent 主循环（AgentLoop）
+    5. 设置 Cron 回调（通过 Agent 执行定时任务）
+    6. 创建心跳服务（HeartbeatService，每 30 分钟唤醒 Agent）
+    7. 创建渠道管理器并启动所有已启用的渠道
+    8. 启动所有服务并进入运行循环
+
+    参数:
+        port: 网关端口号（预留，当前未使用 HTTP 服务器）
+        verbose: 是否启用详细日志输出
+    """
     from nanobot.config.loader import load_config, get_data_dir
     from nanobot.bus.queue import MessageBus
     from nanobot.agent.loop import AgentLoop
@@ -339,7 +427,7 @@ def gateway(
     
     # Set cron callback (needs agent)
     async def on_cron_job(job: CronJob) -> str | None:
-        """Execute a cron job through the agent."""
+        """定时任务回调：通过 Agent 执行定时任务，可选将结果投递到渠道。"""
         response = await agent.process_direct(
             job.payload.message,
             session_key=f"cron:{job.id}",
@@ -358,7 +446,7 @@ def gateway(
     
     # Create heartbeat service
     async def on_heartbeat(prompt: str) -> str:
-        """Execute heartbeat through the agent."""
+        """心跳回调：通过 Agent 执行心跳检查任务。"""
         return await agent.process_direct(prompt, session_key="heartbeat")
     
     heartbeat = HeartbeatService(
@@ -414,7 +502,25 @@ def agent(
     markdown: bool = typer.Option(True, "--markdown/--no-markdown", help="Render assistant output as Markdown"),
     logs: bool = typer.Option(False, "--logs/--no-logs", help="Show nanobot runtime logs during chat"),
 ):
-    """Interact with the agent directly."""
+    """
+    直接与 Agent 交互（CLI 模式）。
+
+    支持两种使用方式：
+    1. 单条消息模式：nanobot agent -m "你好" → 直接返回回复
+    2. 交互模式：nanobot agent → 进入交互式对话循环
+
+    交互模式特性：
+    - 使用 prompt_toolkit 提供行编辑和历史记录
+    - 支持 Markdown 渲染输出
+    - 支持 Ctrl+C 或输入 exit/quit 退出
+    - 可选显示运行时日志（--logs）
+
+    参数:
+        message: 单条消息内容（指定后直接执行并退出）
+        session_id: 会话 ID，默认 "cli:direct"
+        markdown: 是否以 Markdown 格式渲染输出
+        logs: 是否显示运行时日志
+    """
     from nanobot.config.loader import load_config
     from nanobot.bus.queue import MessageBus
     from nanobot.agent.loop import AgentLoop
@@ -510,7 +616,14 @@ app.add_typer(channels_app, name="channels")
 
 @channels_app.command("status")
 def channels_status():
-    """Show channel status."""
+    """
+    显示所有渠道的状态信息。
+
+    以表格形式展示每个渠道的：
+    - 名称（WhatsApp、Discord、Feishu 等）
+    - 是否启用
+    - 配置摘要（URL、Token 前缀等）
+    """
     from nanobot.config.loader import load_config
 
     config = load_config()
@@ -575,7 +688,17 @@ def channels_status():
 
 
 def _get_bridge_dir() -> Path:
-    """Get the bridge directory, setting it up if needed."""
+    """
+    获取 WhatsApp Node.js 桥接服务目录（按需自动构建）。
+
+    流程：
+    1. 检查 ~/.nanobot/bridge/dist/index.js 是否已构建
+    2. 如未构建，查找源码目录（包内或仓库根目录）
+    3. 复制到用户目录并执行 npm install + npm run build
+
+    返回:
+        桥接服务目录路径
+    """
     import shutil
     import subprocess
     
@@ -634,7 +757,12 @@ def _get_bridge_dir() -> Path:
 
 @channels_app.command("login")
 def channels_login():
-    """Link device via QR code."""
+    """
+    启动 WhatsApp 桥接服务并通过二维码登录。
+
+    自动构建（首次运行时）并启动 Node.js 桥接服务，
+    用户需要在终端中扫描显示的二维码以完成设备关联。
+    """
     import subprocess
     from nanobot.config.loader import load_config
     
@@ -668,7 +796,12 @@ app.add_typer(cron_app, name="cron")
 def cron_list(
     all: bool = typer.Option(False, "--all", "-a", help="Include disabled jobs"),
 ):
-    """List scheduled jobs."""
+    """
+    列出所有定时任务。
+
+    以表格形式展示任务 ID、名称、调度规则、状态和下次运行时间。
+    默认只显示启用的任务，使用 --all 显示全部。
+    """
     from nanobot.config.loader import get_data_dir
     from nanobot.cron.service import CronService
     
@@ -712,7 +845,7 @@ def cron_list(
 
 
 @cron_app.command("add")
-def cron_add(
+def cron_add(  # 添加定时任务命令
     name: str = typer.Option(..., "--name", "-n", help="Job name"),
     message: str = typer.Option(..., "--message", "-m", help="Message for agent"),
     every: int = typer.Option(None, "--every", "-e", help="Run every N seconds"),
@@ -722,12 +855,21 @@ def cron_add(
     to: str = typer.Option(None, "--to", help="Recipient for delivery"),
     channel: str = typer.Option(None, "--channel", help="Channel for delivery (e.g. 'telegram', 'whatsapp')"),
 ):
-    """Add a scheduled job."""
+    """
+    添加一个新的定时任务。
+
+    支持三种调度方式（三选一）：
+    - --every N：每 N 秒执行一次
+    - --cron "表达式"：使用 cron 表达式（如 "0 9 * * *" = 每天早上9点）
+    - --at "时间"：指定时间执行一次（ISO 格式）
+
+    可选投递：通过 --deliver --to --channel 将 Agent 回复发送到指定渠道。
+    """
     from nanobot.config.loader import get_data_dir
     from nanobot.cron.service import CronService
     from nanobot.cron.types import CronSchedule
     
-    # Determine schedule type
+    # 根据用户传入的参数确定调度类型
     if every:
         schedule = CronSchedule(kind="every", every_ms=every * 1000)
     elif cron_expr:
@@ -759,7 +901,7 @@ def cron_add(
 def cron_remove(
     job_id: str = typer.Argument(..., help="Job ID to remove"),
 ):
-    """Remove a scheduled job."""
+    """删除指定 ID 的定时任务。"""
     from nanobot.config.loader import get_data_dir
     from nanobot.cron.service import CronService
     
@@ -777,7 +919,7 @@ def cron_enable(
     job_id: str = typer.Argument(..., help="Job ID"),
     disable: bool = typer.Option(False, "--disable", help="Disable instead of enable"),
 ):
-    """Enable or disable a job."""
+    """启用或禁用指定的定时任务。使用 --disable 标志来禁用。"""
     from nanobot.config.loader import get_data_dir
     from nanobot.cron.service import CronService
     
@@ -797,7 +939,7 @@ def cron_run(
     job_id: str = typer.Argument(..., help="Job ID to run"),
     force: bool = typer.Option(False, "--force", "-f", help="Run even if disabled"),
 ):
-    """Manually run a job."""
+    """手动执行指定的定时任务。使用 --force 可以执行已禁用的任务。"""
     from nanobot.config.loader import get_data_dir
     from nanobot.cron.service import CronService
     
@@ -820,7 +962,15 @@ def cron_run(
 
 @app.command()
 def status():
-    """Show nanobot status."""
+    """
+    显示 nanobot 系统状态。
+
+    展示内容：
+    - 配置文件路径和状态
+    - 工作空间路径和状态
+    - 当前使用的模型
+    - 各 LLM 提供者的 API Key 配置状态
+    """
     from nanobot.config.loader import load_config, get_config_path
 
     config_path = get_config_path()
