@@ -28,6 +28,7 @@ from typing import Any
 
 import litellm  # LiteLLM 库：多 LLM 服务商的统一调用层（类似 Java 的 JDBC）
 from litellm import acompletion  # 异步对话补全函数（a = async）
+from loguru import logger
 
 from nanobot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
 from nanobot.providers.registry import find_by_model, find_gateway
@@ -194,6 +195,8 @@ class LiteLLMProvider(LLMProvider):
         """
         # 步骤1：解析模型名称，添加 LiteLLM 所需的前缀
         model = self._resolve_model(model or self.default_model)
+        logger.debug(f"[LLM] chat 调用开始, model={model}")
+        logger.debug(f"[LLM] 消息数={len(messages)}, 工具数={len(tools) if tools else 0}, max_tokens={max_tokens}, temperature={temperature}")
 
         # 步骤2：构建 LiteLLM 调用参数
         kwargs: dict[str, Any] = {
@@ -225,9 +228,13 @@ class LiteLLMProvider(LLMProvider):
 
         try:
             # 步骤6：调用 LiteLLM 的异步对话补全 API
+            logger.debug(f"[LLM] 开始调用 acompletion...")
             response = await acompletion(**kwargs)
+            logger.debug(f"[LLM] acompletion 调用成功")
             # 步骤7：将 LiteLLM 响应解析为统一的 LLMResponse 格式
-            return self._parse_response(response)
+            result = self._parse_response(response)
+            logger.debug(f"[LLM] 解析结果: has_tool_calls={result.has_tool_calls}, content_len={len(result.content) if result.content else 0}, usage={result.usage}")
+            return result
         except Exception as e:
             # 出错时返回错误信息而非抛出异常，保证 Agent 循环不中断
             return LLMResponse(

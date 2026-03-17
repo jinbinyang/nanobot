@@ -248,7 +248,11 @@ class AgentLoop:
         """
         # --- 步骤1: 处理系统消息（子Agent的回报结果） ---
         # 系统消息的 chat_id 格式为 "原始渠道:原始聊天ID"，用于路由回原始对话
+        logger.debug(f"[AGENT-LOOP] ====== 开始处理消息 ======")
+        logger.debug(f"[AGENT-LOOP] 消息渠道: {msg.channel}, 发送者: {msg.sender_id}, chat_id: {msg.chat_id}")
+        logger.debug(f"[AGENT-LOOP] 消息内容: {msg.content[:200]}")
         if msg.channel == "system":
+            logger.debug(f"[AGENT-LOOP] 检测到系统消息（子Agent回报），转入 _process_system_message")
             return await self._process_system_message(msg)
         
         # 日志记录（截取前80字符作为预览）
@@ -258,7 +262,9 @@ class AgentLoop:
         # --- 步骤2: 获取或创建会话 ---
         # session_key 格式通常为 "channel:chat_id"，用于唯一标识一个对话
         key = session_key or msg.session_key
+        logger.debug(f"[AGENT-LOOP] 步骤2: 获取/创建会话, key={key}")
         session = self.sessions.get_or_create(key)
+        logger.debug(f"[AGENT-LOOP] 会话历史消息数: {len(session.messages)}")
         
         # --- 步骤3: 处理斜杠命令 ---
         cmd = msg.content.strip().lower()
@@ -275,7 +281,9 @@ class AgentLoop:
         
         # --- 步骤4: 记忆管理 —— 当会话消息过多时自动归档 ---
         # 类似于 Java 中的日志轮转（log rotation），防止上下文窗口溢出
+        logger.debug(f"[AGENT-LOOP] 步骤4: 检查记忆管理, 当前消息数={len(session.messages)}, 窗口={self.memory_window}")
         if len(session.messages) > self.memory_window:
+            logger.debug(f"[AGENT-LOOP] 触发记忆合并归档")
             await self._consolidate_memory(session)
         
         # --- 步骤5: 更新工具上下文 ---
@@ -294,6 +302,7 @@ class AgentLoop:
         
         # --- 步骤6: 构建 LLM 消息列表 ---
         # 将系统提示词 + 历史对话 + 当前消息组装成 LLM API 需要的格式
+        logger.debug(f"[AGENT-LOOP] 步骤6: 构建 LLM 消息列表")
         messages = self.context.build_messages(
             history=session.get_history(),  # 获取 LLM 格式的历史消息
             current_message=msg.content,
@@ -307,16 +316,22 @@ class AgentLoop:
         iteration = 0
         final_content = None
         tools_used: list[str] = []  # 记录使用过的工具名称
+        logger.debug(f"[AGENT-LOOP] 步骤7: 开始 ReAct 循环, 最大迭代次数={self.max_iterations}")
+        logger.debug(f"[AGENT-LOOP] 消息列表长度: {len(messages)}, 可用工具数: {len(self.tools.get_definitions())}")
+        logger.debug(f"[AGENT-LOOP] 可用工具: {self.tools.tool_names}")
         
         while iteration < self.max_iterations:
             iteration += 1
             
             # 7a: 调用 LLM 进行推理
+            logger.debug(f"[AGENT-LOOP] === ReAct 迭代 #{iteration} ===")
+            logger.debug(f"[AGENT-LOOP] 7a: 调用 LLM 推理, model={self.model}, 当前消息数={len(messages)}")
             response = await self.provider.chat(
                 messages=messages,
                 tools=self.tools.get_definitions(),  # 传入可用工具的 JSON Schema 定义
                 model=self.model
             )
+            logger.debug(f"[AGENT-LOOP] LLM 响应: has_tool_calls={response.has_tool_calls}, content_preview={str(response.content)[:100] if response.content else 'None'}")
             
             # 7b: 检查是否有工具调用请求
             if response.has_tool_calls:
@@ -338,20 +353,26 @@ class AgentLoop:
                 )
                 
                 # 7c: 逐个执行工具调用
-                for tool_call in response.tool_calls:
+                logger.debug(f"[AGENT-LOOP] 7c: 开始执行 {len(response.tool_calls)} 个工具调用")
+                for idx, tool_call in enumerate(response.tool_calls):
                     tools_used.append(tool_call.name)
                     args_str = json.dumps(tool_call.arguments, ensure_ascii=False)
+                    logger.debug(f"[AGENT-LOOP] 工具调用 [{idx+1}/{len(response.tool_calls)}]: {tool_call.name}")
+                    logger.debug(f"[AGENT-LOOP] 工具参数: {args_str[:300]}")
                     logger.info(f"Tool call: {tool_call.name}({args_str[:200]})")
                     result = await self.tools.execute(tool_call.name, tool_call.arguments)
+                    logger.debug(f"[AGENT-LOOP] 工具执行结果 (前200字): {str(result)[:200]}")
                     # 将工具执行结果加入消息列表（LLM 会在下次迭代中看到）
                     messages = self.context.add_tool_result(
                         messages, tool_call.id, tool_call.name, result
                     )
                 # 7d: 交错思维链（Interleaved CoT）—— 让 LLM 在下次行动前先反思
                 # 这是一种提升 Agent 质量的技巧，避免 LLM 盲目连续调用工具
+                logger.debug(f"[AGENT-LOOP] 7d: 注入反思提示，进入下一轮迭代")
                 messages.append({"role": "user", "content": "Reflect on the results and decide next steps."})
             else:
                 # 没有工具调用，说明 LLM 已经给出了最终回复
+                logger.debug(f"[AGENT-LOOP] LLM 返回最终回复（无工具调用），退出 ReAct 循环")
                 final_content = response.content
                 break
         
@@ -368,10 +389,12 @@ class AgentLoop:
         
         # --- 步骤9: 保存会话历史 ---
         # 将用户消息和助手回复存入会话（附带使用的工具名称，便于后续记忆归档）
+        logger.debug(f"[AGENT-LOOP] 步骤9: 保存会话历史, 共使用工具: {tools_used}")
         session.add_message("user", msg.content)
         session.add_message("assistant", final_content,
                             tools_used=tools_used if tools_used else None)
         self.sessions.save(session)
+        logger.debug(f"[AGENT-LOOP] ====== 消息处理完成 ======")
         
         return OutboundMessage(
             channel=msg.channel,

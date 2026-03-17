@@ -27,6 +27,8 @@ import platform
 from pathlib import Path
 from typing import Any
 
+from loguru import logger
+
 from nanobot.agent.memory import MemoryStore  # 记忆存储
 from nanobot.agent.skills import SkillsLoader  # 技能加载器
 
@@ -89,22 +91,26 @@ class ContextBuilder:
         parts = []
         
         # 1. 核心身份（包含当前时间、运行环境、工作区路径等动态信息）
+        logger.debug(f"[CONTEXT] 构建系统提示词开始")
         parts.append(self._get_identity())
         
         # 2. 引导文件（用户自定义的 Agent 配置）
         bootstrap = self._load_bootstrap_files()
         if bootstrap:
+            logger.debug(f"[CONTEXT] 加载引导文件成功, 长度={len(bootstrap)}")
             parts.append(bootstrap)
         
         # 3. 记忆上下文（长期记忆 MEMORY.md 的内容）
         memory = self.memory.get_memory_context()
         if memory:
+            logger.debug(f"[CONTEXT] 加载记忆上下文成功, 长度={len(memory)}")
             parts.append(f"# Memory\n\n{memory}")
         
         # 4. 始终加载的技能（always=true 的技能，全文注入上下文）
         # 这种技能会占用上下文窗口，但 Agent 随时可用
         always_skills = self.skills.get_always_skills()
         if always_skills:
+            logger.debug(f"[CONTEXT] 加载始终活跃技能: {always_skills}")
             always_content = self.skills.load_skills_for_context(always_skills)
             if always_content:
                 parts.append(f"# Active Skills\n\n{always_content}")
@@ -113,6 +119,7 @@ class ContextBuilder:
         # 这是一种"渐进式加载"策略，节省上下文窗口
         skills_summary = self.skills.build_skills_summary()
         if skills_summary:
+            logger.debug(f"[CONTEXT] 构建技能摘要列表, 长度={len(skills_summary)}")
             parts.append(f"""# Skills
 
 The following skills extend your capabilities. To use a skill, read its SKILL.md file using the read_file tool.
@@ -121,7 +128,9 @@ Skills with available="false" need dependencies installed first - you can try in
 {skills_summary}""")
         
         # 用 "---" 分隔各部分（Markdown 水平线）
-        return "\n\n---\n\n".join(parts)
+        prompt = "\n\n---\n\n".join(parts)
+        logger.debug(f"[CONTEXT] 系统提示词构建完成, 总长度={len(prompt)}, 包含 {len(parts)} 个部分")
+        return prompt
     
     def _get_identity(self) -> str:
         """
@@ -228,6 +237,7 @@ To recall past events, grep {workspace_path}/memory/HISTORY.md"""
         messages = []
 
         # 1. 系统提示词（定义 Agent 身份和能力）
+        logger.debug(f"[CONTEXT] build_messages 开始, 历史消息数={len(history)}, channel={channel}, chat_id={chat_id}")
         system_prompt = self.build_system_prompt(skill_names)
         # 附加当前会话信息（让 Agent 知道自己在和哪个渠道的哪个用户对话）
         if channel and chat_id:

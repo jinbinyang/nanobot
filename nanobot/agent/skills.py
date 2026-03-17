@@ -34,6 +34,7 @@ import os
 import re
 import shutil
 from pathlib import Path
+from loguru import logger
 
 # 内置技能目录的默认路径（相对于本文件的上级目录下的 skills/）
 BUILTIN_SKILLS_DIR = Path(__file__).parent.parent / "skills"
@@ -80,6 +81,7 @@ class SkillsLoader:
         返回:
             技能信息字典列表，每个字典包含 'name'（名称）、'path'（文件路径）、'source'（来源）
         """
+        logger.debug(f"[SKILLS] 开始扫描技能, workspace_skills={self.workspace_skills}, builtin_skills={self.builtin_skills}")
         skills = []
 
         # 第一优先级：工作区技能
@@ -100,7 +102,10 @@ class SkillsLoader:
 
         # 根据参数决定是否过滤掉依赖不满足的技能
         if filter_unavailable:
-            return [s for s in skills if self._check_requirements(self._get_skill_meta(s["name"]))]
+            filtered = [s for s in skills if self._check_requirements(self._get_skill_meta(s["name"]))]
+            logger.debug(f"[SKILLS] 发现 {len(skills)} 个技能, 过滤后 {len(filtered)} 个可用")
+            return filtered
+        logger.debug(f"[SKILLS] 发现 {len(skills)} 个技能 (未过滤)")
         return skills
 
     def load_skill(self, name: str) -> str | None:
@@ -164,6 +169,7 @@ class SkillsLoader:
         """
         all_skills = self.list_skills(filter_unavailable=False)
         if not all_skills:
+            logger.debug("[SKILLS] 无可用技能")
             return ""
 
         def escape_xml(s: str) -> str:

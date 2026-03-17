@@ -124,6 +124,10 @@ class SubagentManager:
         task_id = str(uuid.uuid4())[:8]  # 生成8位短ID，方便日志追踪
         display_label = label or task[:30] + ("..." if len(task) > 30 else "")
 
+        logger.debug(f"[SUBAGENT] spawn 被调用: task_id={task_id}, label={display_label}")
+        logger.debug(f"[SUBAGENT] 任务描述: {task[:200]}")
+        logger.debug(f"[SUBAGENT] 结果回报目标: {origin_channel}:{origin_chat_id}")
+
         # 记录结果应回报到哪个渠道/聊天
         origin = {
             "channel": origin_channel,
@@ -168,6 +172,7 @@ class SubagentManager:
 
         try:
             # ===== 第一步：注册子代理可用的工具集 =====
+            logger.debug(f"[SUBAGENT] [{task_id}] 第一步: 注册工具集")
             tools = ToolRegistry()
             allowed_dir = self.workspace if self.restrict_to_workspace else None
 
@@ -191,7 +196,9 @@ class SubagentManager:
             # 注意：不注册 SpawnTool（不能嵌套创建子代理）
 
             # ===== 第二步：构建对话消息列表 =====
+            logger.debug(f"[SUBAGENT] [{task_id}] 第二步: 构建对话消息列表")
             system_prompt = self._build_subagent_prompt(task)
+            logger.debug(f"[SUBAGENT] [{task_id}] system_prompt 长度: {len(system_prompt)}")
             messages: list[dict[str, Any]] = [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": task},
@@ -199,6 +206,7 @@ class SubagentManager:
 
             # ===== 第三步：执行简化版 Agent 循环 =====
             max_iterations = 15  # 最多15轮，防止无限循环
+            logger.debug(f"[SUBAGENT] [{task_id}] 第三步: 开始 Agent 循环, 最大迭代={max_iterations}")
             iteration = 0
             final_result: str | None = None
 
@@ -252,6 +260,7 @@ class SubagentManager:
                 final_result = "Task completed but no final response was generated."
 
             logger.info(f"Subagent [{task_id}] completed successfully")
+            logger.debug(f"[SUBAGENT] [{task_id}] 最终结果预览: {final_result[:200] if final_result else 'None'}")
             await self._announce_result(task_id, label, task, final_result, origin, "ok")
 
         except Exception as e:
